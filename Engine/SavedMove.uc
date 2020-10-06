@@ -129,5 +129,19 @@ function string ToString()
 
 defaultproperties
 {
-     bHidden=True
+      NextMove=None
+      TimeStamp=0.000000
+      Delta=0.000000
+      MergeCount=0
+      bRun=False
+      bDuck=False
+      bPressedJump=False
+      bFire=False
+      bAltFire=False
+      bForceFire=False
+      bForceAltFire=False
+      DodgeMove=DODGE_None
+      SavedLocation=(X=0.000000,Y=0.000000,Z=0.000000)
+      SavedVelocity=(X=0.000000,Y=0.000000,Z=0.000000)
+      SavedViewRotation=(Pitch=0,Yaw=0,Roll=0)
 }

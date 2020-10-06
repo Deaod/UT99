@@ -12,16 +12,17 @@ var globalconfig string BestRecordDate[3];
 
 defaultproperties
 {
-     TotalGames=10
-     TotalFrags=49
-     TotalDeaths=49
-     BestPlayers(0)="Visse"
-     BestPlayers(1)="Tamerlane"
-     BestPlayers(2)="Loque"
-     BestFPHs(0)=376
-     BestFPHs(1)=423
-     BestFPHs(2)=706
-     BestRecordDate(0)="05/31/2014 20:04:31"
-     BestRecordDate(1)="05/31/2014 20:04:31"
-     BestRecordDate(2)="05/31/2014 20:04:31"
+      TotalGames=0
+      TotalFrags=0
+      TotalDeaths=0
+      TotalFlags=0
+      BestPlayers(0)=""
+      BestPlayers(1)=""
+      BestPlayers(2)=""
+      BestFPHs(0)=0
+      BestFPHs(1)=0
+      BestFPHs(2)=0
+      BestRecordDate(0)=""
+      BestRecordDate(1)=""
+      BestRecordDate(2)=""
 }

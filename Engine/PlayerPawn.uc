@@ -187,26 +187,34 @@ var float 	MaxFOV;			// Enforced MaxFOV for this server
 var int 	MaxNameChanges;	// Max number of time a player can change their name in the game
 var int		NameChanges;	// Used to track name changes
 
+
 //
 // OldUnreal movement code
 //
 var() globalconfig bool bDisableMovementBuffering;
+var transient bool bPausePressed;
+
+// Which version of the physics code does the server/client use?
+var int ServerMovementVersion, ClientMovementVersion;
+
+// Mouse movement
+var transient float AccumulatedHTurn, AccumulatedVTurn; // Discarded fractional parts of horizontal (Yaw) and vertical (Pitch) turns
 
 // Clientside smoothing of position adjustment.
-var vector PreAdjustLocation;
-var vector AdjustLocationOffset;
-var float AdjustLocationAlpha;
+var transient vector PreAdjustLocation;
+var transient vector AdjustLocationOffset;
+var transient float AdjustLocationAlpha;
 
 // Serverside buffering of position adjustment.
-var float LastClientTimestamp;
-var vector LastClientLocation;
+var transient float LastClientTimestamp;
+var transient vector LastClientLocation;
 
 
 replication
 {
 	// Things the server should send to the client.
 	reliable if( bNetOwner && Role==ROLE_Authority )
-		ViewTarget, ScoringType, HUDType, GameReplicationInfo, bFixedCamera, bCheatsEnabled;
+		ViewTarget, ScoringType, HUDType, GameReplicationInfo, bFixedCamera, bCheatsEnabled, ServerMovementVersion;
 	unreliable if ( bNetOwner && Role==ROLE_Authority )
 		TargetViewRotation, TargetEyeHeight, TargetWeaponViewOffset;
 	reliable if( bDemoRecording && Role==ROLE_Authority )
@@ -214,7 +222,7 @@ replication
 
 	// Things the client should send to the server
 	reliable if ( Role<ROLE_Authority )
-		Password, bReadyToPlay;
+		Password, bReadyToPlay, ClientMovementVersion;
 
 	// Functions client can call.
 	unreliable if( Role<ROLE_Authority )
@@ -1031,7 +1039,6 @@ function ClientAdjustPosition
 	local Decoration Carried;
 	local vector OldLoc, NewLocation, NewVelocity;
 	local SavedMove CurrentMove;
-//	local float LocErr;
 
 	if ( CurrentTimeStamp > TimeStamp )
 		return;
@@ -1053,8 +1060,7 @@ function ClientAdjustPosition
 		AdjustLocationOffset = vect(0,0,0);
 	}
 
-	// stijn: Backported hugely influential fix from UE2 here
-	// Remove acknowledged moves from the savedmoves list
+	// stijn: Remove acknowledged moves from the savedmoves list
 	CurrentMove = SavedMoves;
 	while (CurrentMove != None)
 	{
@@ -1063,34 +1069,8 @@ function ClientAdjustPosition
 			SavedMoves = CurrentMove.NextMove;
 			CurrentMove.NextMove = FreeMoves;
 			FreeMoves = CurrentMove;
-/*			if (CurrentMove.TimeStamp == CurrentTimeStamp)
-			{
-//				log("> Server NACK "@CurrentMove.ToString()@"[POSERR]"@VSize(CurrentMove.SavedLocation - NewLocation)@"[VELERR]"@VSize(CurrentMove.SavedVelocity - NewVelocity));
-				
-				// if this is a small adjustment that does not
-				// change our state, then reject it. This way
-				// we can ensure that movement remains smooth
-				LocErr = VSize(CurrentMove.SavedLocation - NewLocation);
-				if (LocErr < 3 && IsInState(newState))
-				{
-//					log("> ClientAdjustPosition REJECT [LOCERR]"@LocErr);
-					FreeMoves.Clear();
-					return;
-				}
-				else
-				{				
-//					log("> ClientAdjustPosition ACCEPT [LOCERR]"@LocErr);
-					// stijn: ok, this is a serious adjustment.
-					FreeMoves.Clear();
-					CurrentMove = None;
-				}
-		    }
-		    else
-			{*/
-//				log("> Server ACK "@CurrentMove.ToString());
-				FreeMoves.Clear();
-				CurrentMove = SavedMoves;
-//			}
+			FreeMoves.Clear();
+			CurrentMove = SavedMoves;
 		}
 		else
 		{
@@ -1098,7 +1078,6 @@ function ClientAdjustPosition
 			CurrentMove = None;
 		}
 	}
-	// stijn: End of fix
 
 	SetBase(NewBase);
 	if ( Mover(NewBase) != None )
@@ -1132,7 +1111,7 @@ function ClientReplayMove( SavedMove Move)
 	local int i;
 	local float DeltaTime;
 	
-	SetRotation( Move.Rotation);
+	SetRotation( Move.Rotation);	
 	ViewRotation = Move.SavedViewRotation;
 
 	// Replay the move in the same amount of ticks they were created+merged.
@@ -1161,8 +1140,7 @@ function ClientUpdatePosition()
 	local vector Dir;
 	
 	local float AdjustDistance;
-	local vector PostAdjustLocation;
-	
+	local vector PostAdjustLocation;	
 
 	bUpdatePosition = false;
 	realbRun = bRun;
@@ -1206,10 +1184,10 @@ function ClientUpdatePosition()
 	// stijn: The original code was not replaying the pending move
 	// here. This was a huge oversight and caused non-stop resynchronizations
 	// because the playerpawn position would be off constantly until the player
-	//stopped moving!
+	// stopped moving!
 	if ( PendingMove != none )
 		ClientReplayMove(PendingMove);
-	
+
 	// Higor: evaluate location adjustment and see if we should either
 	// - Discard it
 	// - Negate and process over a certain amount of time.
@@ -1217,7 +1195,8 @@ function ClientUpdatePosition()
 	AdjustLocationOffset = (Location - PreAdjustLocation);
 	AdjustDistance = VSize(AdjustLocationOffset);
 	AdjustLocationAlpha = 0;
-	if ( AdjustDistance < VSize(Acceleration) ) //Only do this if player is trying to move
+	if ( Level.ServerMoveVersion >= 2 &&
+	     AdjustDistance < VSize(Acceleration) ) //Only do this if player is trying to move
 	{
 		if ( AdjustDistance < 2 )
 		{
@@ -1235,7 +1214,6 @@ function ClientUpdatePosition()
 	}
 	// Keep as is.
 
-	
 	bUpdating = false;
 	bDuck = realbDuck;
 	bRun = realbRun;
@@ -1356,7 +1334,7 @@ function ReplicateMove
 		else
 		{
 			// Burst old move and remove from Pending
-			//Log("Bursting move"@Level.TimeSeconds);
+//			Log("Bursting move"@Level.TimeSeconds);
 			SendServerMove(PendingMove);
 			ClientUpdateTime = PendingMove.Delta - NetMoveDelta;
 			if ( SavedMoves == None )
@@ -1547,7 +1525,7 @@ function ClientInstantFlash( float scale, vector fog )
 	InstantFog = 0.001 * fog;
 }
 
-//Play a sound client side (so only client will hear it
+//Play a sound client side (so only client will hear it)
 simulated function ClientPlaySound(sound ASound, optional bool bInterrupt, optional bool bVolumeControl )
 {
 	local actor SoundPlayer;
@@ -1559,9 +1537,6 @@ simulated function ClientPlaySound(sound ASound, optional bool bInterrupt, optio
 		SoundPlayer = self;
 
 	SoundPlayer.PlaySound(ASound, SLOT_None, 16.0, bInterrupt);
-	SoundPlayer.PlaySound(ASound, SLOT_Interface, 16.0, bInterrupt);
-	SoundPlayer.PlaySound(ASound, SLOT_Misc, 16.0, bInterrupt);
-	SoundPlayer.PlaySound(ASound, SLOT_Talk, 16.0, bInterrupt);
 }
 
 simulated function ClientReliablePlaySound(sound ASound, optional bool bInterrupt, optional bool bVolumeControl )
@@ -1651,7 +1626,10 @@ exec function ShowSpecialMenu( string ClassName )
 exec function Jump( optional float F )
 {
 	if ( !bShowMenu && (Level.Pauser == PlayerReplicationInfo.PlayerName) )
-		SetPause(False);
+	{
+		if ( Level.NetMode == NM_Standalone )
+			SetPause(False);
+	}
 	else
 		bPressedJump = true;
 }
@@ -2253,6 +2231,8 @@ exec function KickBanId( string S)
 // Try to set the pause state; returns success indicator.
 function bool SetPause( BOOL bPause )
 {
+	if ( (Level.NetMode != NM_Standalone) && !bPausePressed )
+		return false;
 	return (Level.Game != None && Level.Game.SetPause(bPause, self));
 }
 
@@ -2289,8 +2269,10 @@ exec function Pause()
 {
 	if ( bShowMenu )
 		return;
+	bPausePressed = true;
 	if( !SetPause(Level.Pauser=="") )
 		ClientMessage(NoPauseMessage);
+	bPausePressed = false;
 }
 
 // Activate specific inventory item
@@ -2462,7 +2444,10 @@ exec function Fire( optional float F )
 		if( (Role < ROLE_Authority) && (Weapon!=None) )
 			bJustFired = Weapon.ClientFire(F);
 		if ( !bShowMenu && (Level.Pauser == PlayerReplicationInfo.PlayerName)  )
-			SetPause(False);
+		{
+			if ( Level.NetMode == NM_Standalone )
+				SetPause(False);
+		}
 		return;
 	}
 	if( Weapon!=None )
@@ -2482,7 +2467,10 @@ exec function AltFire( optional float F )
 		if( (Role < ROLE_Authority) && (Weapon!=None) )
 			bJustAltFired = Weapon.ClientAltFire(F);
 		if ( !bShowMenu && (Level.Pauser == PlayerReplicationInfo.PlayerName) )
-			SetPause(False);
+		{
+			if ( Level.NetMode == NM_Standalone )
+				SetPause(False);
+		}
 		return;
 	}
 	if( Weapon!=None )
@@ -2856,7 +2844,7 @@ exec function ShowMenu()
 	bShowMenu = true; // menu is responsible for turning this off
 	Player.Console.GotoState('Menuing');
 
-	if( Level.Netmode == NM_Standalone )
+	if ( Level.Netmode == NM_Standalone )
 		SetPause(true);
 }
 
@@ -3576,6 +3564,13 @@ event PostBeginPlay()
 		HUDType = Level.Game.HUDType;
 		ScoringType = Level.Game.ScoreboardType;
 		MyAutoAim = FMax(MyAutoAim, Level.Game.AutoAim);
+		ServerMovementVersion = Level.ServerMoveVersion;
+		if (Level.NetMode == NM_Standalone)
+		   ClientMovementVersion = ServerMovementVersion;
+	}
+	else
+	{
+		ClientMovementVersion = Level.default.ServerMoveVersion;
 	}
 	bIsPlayer = true;
 	DodgeClickTime = FMin(0.3, DodgeClickTime);
@@ -3755,6 +3750,13 @@ function CalcBehindView(out vector CameraLocation, out rotator CameraRotation, f
 
 event PlayerCalcView(out actor ViewActor, out vector CameraLocation, out rotator CameraRotation )
 {
+	local vector CameraVelocity;
+	PlayerCalcViewEx(ViewActor, CameraLocation, CameraRotation, CameraVelocity);
+}
+
+// stijn: same as playercalcview but returns the camera velocity too
+event PlayerCalcViewEx(out actor ViewActor, out vector CameraLocation, out rotator CameraRotation, out vector CameraVelocity )
+{
 	local Pawn PTarget;
 
 	if ( ViewTarget != None )
@@ -3762,6 +3764,7 @@ event PlayerCalcView(out actor ViewActor, out vector CameraLocation, out rotator
 		ViewActor = ViewTarget;
 		CameraLocation = ViewTarget.Location;
 		CameraRotation = ViewTarget.Rotation;
+		CameraVelocity = ViewTarget.Velocity;
 		PTarget = Pawn(ViewTarget);
 		if ( PTarget != None )
 		{
@@ -3785,6 +3788,7 @@ event PlayerCalcView(out actor ViewActor, out vector CameraLocation, out rotator
 
 	ViewActor = Self;
 	CameraLocation = Location;
+	CameraVelocity = Velocity;
 
 	if( bBehindView ) //up and behind
 		CalcBehindView(CameraLocation, CameraRotation, 150);
@@ -3903,7 +3907,7 @@ function UpdateRotation(float DeltaTime, float maxPitch)
 	local rotator newRotation;
 
 	DesiredRotation = ViewRotation; //save old rotation
-	ViewRotation.Pitch += 32.0 * DeltaTime * aLookUp;
+	ViewRotation.Pitch += AccumulatedPlayerTurn( 32.0 * DeltaTime * aLookUp, AccumulatedVTurn);
 	ViewRotation.Pitch = ViewRotation.Pitch & 65535;
 	If ((ViewRotation.Pitch > 18000) && (ViewRotation.Pitch < 49152))
 	{
@@ -3912,7 +3916,7 @@ function UpdateRotation(float DeltaTime, float maxPitch)
 		else
 			ViewRotation.Pitch = 49152;
 	}
-	ViewRotation.Yaw += 32.0 * DeltaTime * aTurn;
+	ViewRotation.Yaw += AccumulatedPlayerTurn( 32.0 * DeltaTime * aTurn, AccumulatedHTurn);
 	ViewShake(deltaTime);
 	ViewFlash(deltaTime);
 
@@ -3927,6 +3931,16 @@ function UpdateRotation(float DeltaTime, float maxPitch)
 			newRotation.Pitch = 65536 - maxPitch * RotationRate.Pitch;
 	}
 	setRotation(newRotation);
+}
+
+function int AccumulatedPlayerTurn( float CurrentTurn, out float AccumulatedTurn)
+{
+	local int IntTurn;
+
+	CurrentTurn += AccumulatedTurn;
+	IntTurn = CurrentTurn;
+	AccumulatedTurn = CurrentTurn - IntTurn;
+	return IntTurn;
 }
 
 function SwimAnimUpdate(bool bNotForward)
@@ -4164,6 +4178,24 @@ ignores SeePlayer, HearNoise, Bump;
 	{
 		if ( bUpdatePosition )
 			ClientUpdatePosition();
+
+		//
+		// stijn: if the server corrected our position in the middle of
+		// a dodge, we might end up in DODGE_Active state with our
+		// Physics set to PHYS_Walking. If this happened before 469,
+		// the player would not be able to dodge again until triggering
+		// a landed event (which usually meant you had to jump).
+		// Here, we just wait for the dodge animation to play out and
+		// then manually force a dodgedir reset.
+		// 
+		if (DodgeDir == DODGE_Active &&
+		    Physics != PHYS_Falling &&
+			GetAnimGroup(AnimSequence) != 'Dodge' &&
+			GetAnimGroup(AnimSequence) != 'Jumping')
+		{
+			DodgeDir = DODGE_None;
+			DodgeClickTimer = DodgeClickTime;
+		}	
 
 		PlayerMove(DeltaTime);
 	}
@@ -4772,7 +4804,7 @@ ignores SeePlayer, HearNoise, Bump, TakeDamage;
 	{
 		Acceleration = Normal(NewAccel);
 		Velocity = Normal(NewAccel) * 300;
-//		AutonomousPhysics(DeltaTime);
+		AutonomousPhysics(DeltaTime);
 	}
 
 	event PlayerTick( float DeltaTime )
@@ -4898,6 +4930,12 @@ ignores SeePlayer, HearNoise, Bump, TakeDamage, Died, ZoneChange, FootZoneChange
 		SetCollision(false,false,false);
 		EyeHeight = BaseEyeHeight;
 		SetPhysics(PHYS_None);
+	}
+	
+	function StartWalk()
+	{
+		// Prevent AdminLogout from allowing a waiting player to
+		// interact with the Level.
 	}
 }
 
@@ -5205,8 +5243,8 @@ ignores SeePlayer, HearNoise, KilledBy, Bump, HitWall, HeadZoneChange, FootZoneC
 			// Update view rotation.
 			aLookup  *= 0.24;
 			aTurn    *= 0.24;
-			ViewRotation.Yaw += 32.0 * DeltaTime * aTurn;
-			ViewRotation.Pitch += 32.0 * DeltaTime * aLookUp;
+			ViewRotation.Yaw += AccumulatedPlayerTurn( 32.0 * DeltaTime * aTurn, AccumulatedHTurn);
+			ViewRotation.Pitch += AccumulatedPlayerTurn( 32.0 * DeltaTime * aLookUp, AccumulatedVTurn);
 			ViewRotation.Pitch = ViewRotation.Pitch & 65535;
 			If ((ViewRotation.Pitch > 18000) && (ViewRotation.Pitch < 49152))
 			{
@@ -5385,8 +5423,8 @@ ignores SeePlayer, HearNoise, KilledBy, Bump, HitWall, HeadZoneChange, FootZoneC
 		{
 			aLookup  *= 0.24;
 			aTurn    *= 0.24;
-			ViewRotation.Yaw += 32.0 * DeltaTime * aTurn;
-			ViewRotation.Pitch += 32.0 * DeltaTime * aLookUp;
+			ViewRotation.Yaw += AccumulatedPlayerTurn( 32.0 * DeltaTime * aTurn, AccumulatedHTurn);
+			ViewRotation.Pitch += AccumulatedPlayerTurn( 32.0 * DeltaTime * aLookUp, AccumulatedVTurn);
 			ViewRotation.Pitch = ViewRotation.Pitch & 65535;
 			If ((ViewRotation.Pitch > 18000) && (ViewRotation.Pitch < 49152))
 			{
@@ -5512,34 +5550,233 @@ function SetNGSecret(string newSecret)
 
 defaultproperties
 {
-	 bNoFlash=true
-	 ViewingFrom="Now viewing from"
-	 OwnCamera="own camera"
-	 FailedView="Failed to change view."
-     DodgeClickTime=0.250000
-     Bob=0.016000
-     FlashScale=(X=1.000000,Y=1.000000,Z=1.000000)
-     DesiredFOV=90.000000
-	 DefaultFOV=90.000000
-     CdTrack=255
-     MyAutoAim=1.000000
-     Handedness=-1.000000
-     bAlwaysMouseLook=True
-	 bMaxMouseSmoothing=True
-     MouseSensitivity=3.000000
-     MouseSmoothThreshold=0.070000
-     QuickSaveString="Quick Saving"
-     NoPauseMessage="Game is not pauseable"
-     bIsPlayer=True
-     bCanJump=True
-     DesiredSpeed=0.300000
-     SightRadius=4100.000000
-     bTravel=True
-     bStasis=False
-	 NetPriority=3
-	 MaxTimeMargin=+3.0
-	 bMessageBeep=True
-	 bViewTarget=true
-	 bCheatsEnabled=False
-     bDisableMovementBuffering=False
+      Player=None
+      Password=""
+      DodgeClickTimer=0.000000
+      DodgeClickTime=0.250000
+      Bob=0.000000
+      LandBob=0.000000
+      AppliedBob=0.000000
+      bobtime=0.000000
+      ShowFlags=0
+      RendMap=0
+      Misc1=0
+      Misc2=0
+      ViewTarget=None
+      FlashScale=(X=1.000000,Y=1.000000,Z=1.000000)
+      FlashFog=(X=0.000000,Y=0.000000,Z=0.000000)
+      myHUD=None
+      Scoring=None
+      HUDType=None
+      ScoringType=None
+      DesiredFlashScale=0.000000
+      ConstantGlowScale=0.000000
+      InstantFlash=0.000000
+      DesiredFlashFog=(X=0.000000,Y=0.000000,Z=0.000000)
+      ConstantGlowFog=(X=0.000000,Y=0.000000,Z=0.000000)
+      InstantFog=(X=0.000000,Y=0.000000,Z=0.000000)
+      DesiredFOV=90.000000
+      DefaultFOV=90.000000
+      Song=None
+      SongSection=0
+      CdTrack=255
+      Transition=MTRAN_None
+      shaketimer=0.000000
+      shakemag=0
+      shakevert=0.000000
+      maxshake=0.000000
+      verttimer=0.000000
+      CarcassType=None
+      MyAutoAim=1.000000
+      Handedness=-1.000000
+      JumpSound=None
+      bAdmin=False
+      bLookUpStairs=False
+      bSnapToLevel=False
+      bAlwaysMouseLook=True
+      bKeyboardLook=True
+      bWasForward=False
+      bWasBack=False
+      bWasLeft=False
+      bWasRight=False
+      bEdgeForward=False
+      bEdgeBack=False
+      bEdgeLeft=False
+      bEdgeRight=False
+      bIsCrouching=False
+      bShakeDir=False
+      bAnimTransition=False
+      bIsTurning=False
+      bFrozen=False
+      bBadConnectionAlert=False
+      bInvertMouse=False
+      bShowScores=False
+      bShowMenu=False
+      bSpecialMenu=False
+      bWokeUp=False
+      bPressedJump=False
+      bUpdatePosition=False
+      bDelayedCommand=False
+      bRising=False
+      bReducedVis=False
+      bCenterView=False
+      bMaxMouseSmoothing=True
+      bMouseZeroed=False
+      bReadyToPlay=False
+      bNoFlash=True
+      bNoVoices=False
+      bMessageBeep=False
+      bZooming=False
+      bSinglePlayer=False
+      bJustFired=False
+      bJustAltFired=False
+      bIsTyping=False
+      bFixedCamera=False
+      bNeverAutoSwitch=False
+      bJumpStatus=False
+      bUpdating=False
+      bCheatsEnabled=False
+      bNoMouseSmoothing=False
+      ZoomLevel=0.000000
+      SpecialMenu=None
+      DelayedCommand=""
+      MouseSensitivity=1.500000
+      WeaponPriority(0)="Translocator"
+      WeaponPriority(1)="ChainSaw"
+      WeaponPriority(2)="ImpactHammer"
+      WeaponPriority(3)="enforcer"
+      WeaponPriority(4)="doubleenforcer"
+      WeaponPriority(5)="ShockRifle"
+      WeaponPriority(6)="ut_biorifle"
+      WeaponPriority(7)="PulseGun"
+      WeaponPriority(8)="SniperRifle"
+      WeaponPriority(9)="ripper"
+      WeaponPriority(10)="minigun2"
+      WeaponPriority(11)="UT_FlakCannon"
+      WeaponPriority(12)="UT_Eightball"
+      WeaponPriority(13)="WarheadLauncher"
+      WeaponPriority(14)="None"
+      WeaponPriority(15)="None"
+      WeaponPriority(16)="None"
+      WeaponPriority(17)="None"
+      WeaponPriority(18)="None"
+      WeaponPriority(19)="None"
+      WeaponPriority(20)="None"
+      WeaponPriority(21)="None"
+      WeaponPriority(22)="None"
+      WeaponPriority(23)="None"
+      WeaponPriority(24)="None"
+      WeaponPriority(25)="None"
+      WeaponPriority(26)="None"
+      WeaponPriority(27)="None"
+      WeaponPriority(28)="None"
+      WeaponPriority(29)="None"
+      WeaponPriority(30)="None"
+      WeaponPriority(31)="None"
+      WeaponPriority(32)="None"
+      WeaponPriority(33)="None"
+      WeaponPriority(34)="None"
+      WeaponPriority(35)="None"
+      WeaponPriority(36)="None"
+      WeaponPriority(37)="None"
+      WeaponPriority(38)="None"
+      WeaponPriority(39)="None"
+      WeaponPriority(40)="None"
+      WeaponPriority(41)="None"
+      WeaponPriority(42)="None"
+      WeaponPriority(43)="None"
+      WeaponPriority(44)="None"
+      WeaponPriority(45)="None"
+      WeaponPriority(46)="None"
+      WeaponPriority(47)="None"
+      WeaponPriority(48)="None"
+      WeaponPriority(49)="None"
+      SmoothMouseX=0.000000
+      SmoothMouseY=0.000000
+      BorrowedMouseX=0.000000
+      BorrowedMouseY=0.000000
+      MouseSmoothThreshold=0.070000
+      MouseZeroTime=0.000000
+      aBaseX=0.000000
+      aBaseY=0.000000
+      aBaseZ=0.000000
+      aMouseX=0.000000
+      aMouseY=0.000000
+      aForward=0.000000
+      aTurn=0.000000
+      aStrafe=0.000000
+      aUp=0.000000
+      aLookUp=0.000000
+      aExtra4=0.000000
+      aExtra3=0.000000
+      aExtra2=0.000000
+      aExtra1=0.000000
+      aExtra0=0.000000
+      SavedMoves=None
+      FreeMoves=None
+      PendingMove=None
+      CurrentTimeStamp=0.000000
+      LastUpdateTime=0.000000
+      ServerTimeStamp=0.000000
+      TimeMargin=0.000000
+      ClientUpdateTime=0.000000
+      MaxTimeMargin=3.000000
+      ProgressMessage(0)=""
+      ProgressMessage(1)=""
+      ProgressMessage(2)=""
+      ProgressMessage(3)=""
+      ProgressMessage(4)=""
+      ProgressMessage(5)=""
+      ProgressMessage(6)=""
+      ProgressMessage(7)=""
+      ProgressColor(0)=(R=0,G=0,B=0,A=0)
+      ProgressColor(1)=(R=0,G=0,B=0,A=0)
+      ProgressColor(2)=(R=0,G=0,B=0,A=0)
+      ProgressColor(3)=(R=0,G=0,B=0,A=0)
+      ProgressColor(4)=(R=0,G=0,B=0,A=0)
+      ProgressColor(5)=(R=0,G=0,B=0,A=0)
+      ProgressColor(6)=(R=0,G=0,B=0,A=0)
+      ProgressColor(7)=(R=0,G=0,B=0,A=0)
+      ProgressTimeOut=0.000000
+      QuickSaveString="Quick Saving"
+      NoPauseMessage="Game is not pauseable"
+      ViewingFrom="Now viewing from"
+      OwnCamera="own camera"
+      FailedView="Failed to change view."
+      GameReplicationInfo=None
+      ngWorldSecret=""
+      ngSecretSet=False
+      ReceivedSecretChecksum=False
+      TargetViewRotation=(Pitch=0,Yaw=0,Roll=0)
+      TargetEyeHeight=0.000000
+      TargetWeaponViewOffset=(X=0.000000,Y=0.000000,Z=0.000000)
+      DemoViewPitch=0
+      DemoViewYaw=0
+      LastPlaySound=0.000000
+      LastMessageWindow=0.000000
+      LoginAttempts=0
+      bLoginDisabled=False
+      NextLoginTime=0.000000
+      ViewDelay=0.000000
+      TauntDelay=0.000000
+      SpeechDelay=0.000000
+      LastView=0.000000
+      LastTaunt=0.000000
+      LastSpeech=0.000000
+      bCyclingView=False
+      MinFOV=0.000000
+      MaxFOV=0.000000
+      MaxNameChanges=0
+      NameChanges=0
+      bDisableMovementBuffering=False
+      ServerMovementVersion=0
+      ClientMovementVersion=0
+      bIsPlayer=True
+      bCanJump=True
+      bViewTarget=True
+      DesiredSpeed=0.300000
+      SightRadius=4100.000000
+      bStasis=False
+      bTravel=True
+      NetPriority=3.000000
 }

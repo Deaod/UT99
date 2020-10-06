@@ -23,7 +23,4 @@ function CreatePages()
 
 defaultproperties
 {
-     Map="DM-Turbine.unr"
-     GameType="BotPack.TeamGamePlus"
-     MutatorList="SlMod.SlMutRGen"
 }
