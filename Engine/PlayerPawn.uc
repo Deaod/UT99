@@ -551,7 +551,7 @@ function SendServerMove( SavedMove Move, optional SavedMove OldMove)
 	local EDodgeDir DodgeMove;
 
 	ClientRoll = (Rotation.Roll >> 8) & 255;
-	View = (32767 & (ViewRotation.Pitch/2)) * 32768 + (32767 & (ViewRotation.Yaw/2));
+	View = (32767 & (Move.SavedViewRotation.Pitch/2)) * 32768 + (32767 & (Move.SavedViewRotation.Yaw/2));
 	
 	// check if need to redundantly send previous move
 	if ( OldMove != None )
