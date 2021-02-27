@@ -3895,8 +3895,8 @@ function ViewShake(float DeltaTime)
 		}
 		else
 		{
-			ViewRotation.Roll += ((65536 - Max(500,ViewRotation.Roll)) * 10 * FMin(0.1,DeltaTime));
-			if ( ViewRotation.Roll > 65534 )
+			ViewRotation.Roll += (Max(500, 65536 - ViewRotation.Roll) * 10 * FMin(0.1,DeltaTime));
+			if ( ViewRotation.Roll > 65535 )
 				ViewRotation.Roll = 0;
 		}
 	}
