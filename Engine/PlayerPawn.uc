@@ -3630,7 +3630,7 @@ simulated function bool AdjustHitLocation(out vector HitLocation, vector TraceDi
 		HitLocation.Z = maxZ;
 		HitLocation.X = HitLocation.X + TraceDir.X * adjZ;
 		HitLocation.Y = HitLocation.Y + TraceDir.Y * adjZ;
-		if ( VSize(HitLocation - Location) > CollisionRadius )
+		if ( VSize((HitLocation - Location)*vect(1,1,0)) > CollisionRadius )
 			return false;
 	}
 	return true;
